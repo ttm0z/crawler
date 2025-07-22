@@ -1,0 +1,81 @@
+#ifndef MODEL_HPP
+#define MODEL_HPP
+
+#include <assimp/scene.h>
+#include <string>
+#include <map>
+#include <vector>
+#include <unordered_map>
+#include <memory>
+#include <glad/glad.h>  // OpenGL loader, adjust as needed
+#include <glm/gtc/type_ptr.hpp>
+#include <assimp/Importer.hpp>
+
+// AnimationConstants.hpp or Model.hpp
+
+
+// Forward declaration of Mesh
+class Mesh;
+struct VertexBoneData {
+    unsigned int boneIDs[4] = {0, 0, 0, 0};
+    float weights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    void addBoneData(unsigned int boneID, float weight) {
+        for (int i = 0; i < 4; i++) {
+            if (weights[i] == 0.0f) {
+                boneIDs[i] = boneID;
+                weights[i] = weight;
+                return;
+            }
+        }
+        // Exceeded max bones per vertex (could add overflow handling)
+    }
+};
+class Model {
+public:
+    void printAnimations() const;
+
+    static constexpr int MAX_BONES = 100;
+    Model();
+    ~Model() = default;
+    const aiScene* scene = nullptr;  // Add this line
+    // Loads a glTF/glb model using Assimp
+    bool load(const std::string& filepath);
+    void printMeshData() const;
+    void printBoneData() const;
+    void summarizeGLBData(const aiScene* scene);
+    glm::mat4 globalInverseTransform;
+
+    std::vector<glm::mat4> getBoneOffsetMatrices();
+
+    // Render all meshes in the model
+    void draw(GLuint shaderProgram) const;
+    std::vector<glm::mat4> boneMatrices;
+    std::vector<glm::mat4> calculateFinalBoneMatrices(float timeSec, int animationIndex);
+    void readNodeHierarchy(float animationTime, aiNode* node, const glm::mat4& parentTransform, std::vector<glm::mat4>& finalBones, const aiAnimation* animation);
+    std::unordered_map<std::string, size_t> populateAnimationMap() const;
+private:
+    
+    Assimp::Importer importer;       // Keep this in scope so scene remains valid
+    glm::mat4 toGlm(const aiMatrix4x4& from);
+    const aiNodeAnim* findNodeAnim(const aiAnimation* animation, const std::string& nodeName);
+
+    glm::vec3 interpolateTranslation(float time, const aiNodeAnim* nodeAnim);
+    glm::quat interpolateRotation(float time, const aiNodeAnim* nodeAnim);
+    glm::vec3 interpolateScaling(float time, const aiNodeAnim* nodeAnim);
+
+
+    // All meshes in the model
+    
+    std::vector<std::shared_ptr<Mesh>> meshes;
+    std::map<std::string, unsigned int> boneNameToIndex;
+    std::vector<glm::mat4> boneOffsetMatrices;
+    // Process an Assimp node recursively
+    void processNode(aiNode* node, const aiScene* scene);
+
+    // Process an individual mesh
+    std::shared_ptr<Mesh> processMesh(aiMesh* mesh, const aiScene* scene);
+    std::shared_ptr<Mesh> processStaticMesh(aiMesh* mesh, const aiScene*);
+};
+
+#endif // MODEL_HPP

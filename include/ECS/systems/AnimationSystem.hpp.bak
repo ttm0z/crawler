@@ -1,0 +1,40 @@
+#pragma once;
+#include "../System.hpp"
+#include "../Components.hpp"
+#include "../Archetypes.hpp"
+#include "../../util/Render.hpp"
+#include <unordered_set>
+#include <unordered_map>
+
+class AnimationSystem : public System {
+
+public:
+
+    AnimationSystem() {
+        setSignature(animationArchetype);
+    }
+
+void update(float deltaTime, ECS& ecs) override {
+    auto entities = ecs.getEntitiesBySignature(animationArchetype);
+    for (auto entity : entities) {
+        auto& anim = ecs.getComponent<AnimationComponent>(entity);
+        auto model = ecs.getComponent<RenderableComponent>(entity).m_model;
+        auto& skeleton = ecs.getComponent<SkeletonComponent>(entity);
+
+        if (!anim.isPlaying || anim.isPose) continue;
+
+        size_t animIndex = anim.animationMap[anim.currentAnimation];
+        const auto& animation = model->scene->mAnimations[animIndex];
+
+        anim.currentTime += deltaTime;
+        if (anim.loop && anim.currentTime > animation->mDuration) {
+            anim.currentTime = fmod(anim.currentTime, animation->mDuration);
+        } else if (anim.currentTime > animation->mDuration) {
+            anim.currentTime = animation->mDuration;
+            anim.isPlaying = false;
+        }
+        skeleton.boneMatrices = model->calculateFinalBoneMatrices(anim.currentTime, animIndex);
+    }
+}
+
+};

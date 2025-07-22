@@ -1,0 +1,334 @@
+#pragma once
+#include <vector>
+#include <cmath>
+#include "glad/glad.h"
+#include <GLFW/glfw3.h>
+#include "../System.hpp"
+#include "util/Render.hpp"
+#include <algorithm>
+#include "../Components.hpp"
+#include "../Archetypes.hpp"
+#include "../../ResourceManager.hpp"
+#include <iostream>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp> // For transformations
+#include <glm/gtc/type_ptr.hpp> // For glm::value_ptr
+
+class RenderSystem : public System {
+public:
+    size_t cameraEntity;
+    size_t cursorEntity;
+    size_t toolTip;
+    size_t selectionBox;
+    size_t lightSource = 0;
+    size_t board;
+
+    RenderSystem() {
+        setSignature({
+            typeid(SpriteComponent).hash_code(),
+            typeid(TransformComponent2D).hash_code()
+        });
+    }
+
+    void update(float deltaTime, ECS& ecs) override {
+                
+        timer += deltaTime;
+        auto entities = ecs.getEntitiesBySignature(signature);
+        
+        auto& camera = ecs.getComponent<CameraComponent3D>(cameraEntity);    
+        auto lightEntities = ecs.getEntitiesBySignature(lightArchetype);
+        std::vector<LightSourceComponent> lights;
+        for(auto& light : lightEntities) {
+            lights.push_back(ecs.getComponent<LightSourceComponent>(light));
+        }
+        
+        // Render Skybox
+            auto skyboxEntities = ecs.getEntitiesBySignature(skyboxArchetype);
+            for (auto skyboxEntity : skyboxEntities) {
+                auto& render = ecs.getComponent<RenderableComponent>(skyboxEntity);
+            
+                glDisable(GL_DEPTH_TEST);
+                drawSkybox(render, camera);
+                glEnable(GL_DEPTH_TEST);
+            }
+            
+        // Render Chunks
+        auto chunkEntities = ecs.getEntitiesBySignature(chunkArchetype);
+        for (auto chunkEntity : chunkEntities){
+            auto& chunk = ecs.getComponent<ChunkComponent>(chunkEntity);
+            auto& render = ecs.getComponent<RenderableComponent>(chunkEntity);
+            auto& transform = ecs.getComponent<TransformComponent>(chunkEntity);
+            
+            drawChunk(chunk, camera, render, transform);
+        }
+        auto staticObject = ecs.getEntitiesBySignature(staticObjectArchetype);
+        for (auto entity : staticObject) {
+            auto& render = ecs.getComponent<RenderableComponent>(entity);
+            auto& transform = ecs.getComponent<TransformComponent>(entity);
+
+            if (render.m_model){
+                drawModel(camera, render, transform, timer);
+            }
+        }
+        // Render NPC
+        auto npcEntities = ecs.getEntitiesBySignature(npcArchetype);
+        for (auto npcEntity : npcEntities){
+            auto& render = ecs.getComponent<RenderableComponent>(npcEntity);
+            auto& transform = ecs.getComponent<TransformComponent>(npcEntity);
+            auto& skeleton = ecs.getComponent<SkeletonComponent>(npcEntity);
+            if(render.m_model)
+                drawNPC(camera, render, skeleton, transform, lights, timer);
+        }
+
+        auto playerEntities = ecs.getEntitiesBySignature(playerArchetype);
+        for (auto playerEntity : playerEntities){
+            auto& render = ecs.getComponent<RenderableComponent>(playerEntity);
+            auto& transform = ecs.getComponent<TransformComponent>(playerEntity);
+            auto& skeleton = ecs.getComponent<SkeletonComponent>(playerEntity);
+            drawPlayer(camera, render, skeleton, transform, lights, timer);
+        }
+    }
+
+private:
+    float timer = 0.0f;
+
+    inline void drawSkybox(RenderableComponent& skyboxRenderable, CameraComponent3D& camera) {
+        glDepthFunc(GL_LEQUAL);
+        auto shader = skyboxRenderable.shader;
+        glm::mat4 skyboxView = glm::mat4(glm::mat3(camera.viewMatrix)); // Remove translation component
+        shader -> use();
+        shader -> setInt("skybox", 0); // Assuming the texture unit is 0
+        shader -> setMat4("view", skyboxView);
+        shader -> setMat4("projection", camera.projectionMatrix); // Assuming the texture unit is 0
+        glBindVertexArray(skyboxRenderable.VAO);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxRenderable.textureID);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+        glBindVertexArray(0);
+        glDepthFunc(GL_LESS);
+    }
+
+inline void drawPlayer(CameraComponent3D& camera, RenderableComponent& playerRenderable, SkeletonComponent& playerSkeleton, TransformComponent& playerTransform, std::vector<LightSourceComponent> lights, float deltaTime) {
+    
+    glDepthFunc(GL_LEQUAL);
+
+    // Position the player **in front of the camera**
+    float playerDistance = 0.0f; // Distance in front of the camera (adjust as needed)
+    glm::vec3 playerOffset = camera.direction * playerDistance; 
+    glm::vec3 playerPosition = camera.position;
+
+    glDepthFunc(GL_LEQUAL);
+    
+    auto shader = playerRenderable.shader;
+    auto model = playerRenderable.m_model;
+    
+    shader->use();
+    shader->setInt("playerTexture", 0); // Assuming the texture unit is 0
+
+    
+    // Set the player's new position
+    //playerTransform.position = playerPosition;
+    
+    // Compute model matrix for rendering
+    auto modelMatrix = calculateModelMatrix(playerTransform);
+    shader->setMat4("model", modelMatrix);
+    shader->setMat4("view", camera.viewMatrix);
+    shader->setMat4("projection", camera.projectionMatrix);
+    float animationTime = deltaTime;
+    auto boneMatrices = playerSkeleton.boneMatrices;
+
+    for(size_t i = 0; i < boneMatrices.size(); ++i) {
+        shader->setMat4("boneMatrices[" + std::to_string(i) + "]", boneMatrices[i]);
+    }
+    shader->setVec3("viewPos", camera.position);
+    uploadLightsToShader(lights, shader->ID);
+    glDisable(GL_CULL_FACE);
+    glBindTexture(GL_TEXTURE_2D, playerRenderable.textureID);
+    model->draw(shader -> ID);
+    glFrontFace(GL_CCW);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+}
+
+inline void drawNPC(CameraComponent3D& camera, RenderableComponent& playerRenderable, SkeletonComponent& playerSkeleton, TransformComponent& playerTransform, std::vector<LightSourceComponent> lights, float deltaTime) {
+    glDepthFunc(GL_LEQUAL);
+    
+    auto shader = playerRenderable.shader;
+    auto model = playerRenderable.m_model;
+    
+    shader->use();
+    shader->setInt("playerTexture", 0); // Assuming the texture unit is 0
+
+    
+    // Set the player's new position
+    //playerTransform.position = playerPosition;
+    
+    // Compute model matrix for rendering
+    auto modelMatrix = calculateModelMatrix(playerTransform);
+    shader->setMat4("model", modelMatrix);
+    shader->setMat4("view", camera.viewMatrix);
+    shader->setMat4("projection", camera.projectionMatrix);
+    float animationTime = deltaTime;
+    auto boneMatrices = playerSkeleton.boneMatrices;
+
+    for(size_t i = 0; i < boneMatrices.size(); ++i) {
+        shader->setMat4("boneMatrices[" + std::to_string(i) + "]", boneMatrices[i]);
+    }
+    shader->setVec3("viewPos", camera.position);
+    uploadLightsToShader(lights, shader->ID);
+    glDisable(GL_CULL_FACE);
+    glBindTexture(GL_TEXTURE_2D, playerRenderable.textureID);
+    model->draw(shader -> ID);
+    glFrontFace(GL_CCW);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    
+}
+
+inline void drawModel(CameraComponent3D& camera, RenderableComponent& modelRenderable, TransformComponent& modelTransform, float deltaTime) {
+    
+    glDepthFunc(GL_LEQUAL);
+    
+    auto shader = modelRenderable.shader;
+    auto model = modelRenderable.m_model;
+    
+    shader->use();
+    
+    // Compute model matrix for rendering
+    auto modelMatrix = calculateModelMatrix(modelTransform);
+    shader->setMat4("model", modelMatrix);
+    shader->setMat4("view", camera.viewMatrix);
+    shader->setMat4("projection", camera.projectionMatrix);
+    
+    // Set lighting uniforms
+    glm::vec3 lightPos = glm::vec3(5.0f, 10.0f, 5.0f);  // Example light position
+    glm::vec3 viewPos = camera.position;               // Camera/view position
+
+    shader->setVec3("lightPos", lightPos);
+    shader->setVec3("viewPos", viewPos);
+    shader->setFloat("ambientStrength", 0.3f);
+    shader->setFloat("specularStrength", 0.2f);
+    shader->setFloat("shininess", 16.0f);
+
+    // Optionally pass animation time if needed
+    // shader->setFloat("time", deltaTime);  // Uncomment if shader uses time
+
+    glDisable(GL_CULL_FACE);
+    model->draw(shader -> ID);
+    glFrontFace(GL_CCW);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+}
+
+
+
+    void drawChunk(const ChunkComponent& chunk, const CameraComponent3D& camera, const RenderableComponent& renderComponent, const TransformComponent& transform) 
+    {
+        // Use the shader program
+        auto shader = renderComponent.shader;
+        
+        shader -> use();
+        auto texture = renderComponent.textureID;
+        // Set the shader uniforms / attributes
+        
+        auto model = calculateModelMatrix(transform);
+        shader -> setInt("textureArray", 0);
+        shader -> setMat4("model", model);
+        shader -> setMat4("projection", camera.projectionMatrix);
+        shader ->setMat4("view", camera.viewMatrix);
+        
+        // Render the grid
+        glBindVertexArray(renderComponent.VAO);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, renderComponent.textureID);
+        glDrawElements(GL_TRIANGLES, renderComponent.vertexCount, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+        GLenum error = glGetError();
+        if (error != GL_NO_ERROR) {
+            //std::cout << "OpenGL error: " << error << std::endl;
+        }
+        
+    }
+
+
+glm::mat4 calculateModelMatrix(const TransformComponent& transform) {
+    glm::mat4 translationMatrix = glm::translate(glm::mat4(1.0f), transform.position);
+    
+    glm::mat4 rotationMatrix = glm::rotate(glm::mat4(1.0f), transform.rotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
+    rotationMatrix = glm::rotate(rotationMatrix, transform.rotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
+    rotationMatrix = glm::rotate(rotationMatrix, transform.rotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
+
+    glm::mat4 scaleMatrix = glm::scale(glm::mat4(1.0f), transform.scale);
+
+    glm::mat4 modelMatrix = translationMatrix * rotationMatrix * scaleMatrix;
+
+    return modelMatrix;
+}
+
+    glm::vec3 lightenColor(glm::vec3 baseColor, int population) {
+        float factor = 1.0f - std::min(1.0f, 10.0f / ((float) population + 10.0f)); // Scale based on population
+        return glm::mix(glm::vec3(1.0f, 1.0f, 1.0f), baseColor, factor);
+    }
+    
+    void printProjectionMatrix(const glm::mat4& matrix) {
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                std::cout << matrix[i][j] << " ";
+            }
+            std::cout << std::endl;
+        }
+    }    
+
+    bool isPointInHexagon(const glm::vec2& point, const glm::vec2& center, float hexRadius) {
+    // Generate the vertices of the hexagon around the center
+    std::vector<glm::vec2> hexVertices;
+    for (int i = 0; i < 6; ++i) {
+        float angle = i * M_PI / 3;
+        glm::vec2 vertex = center + glm::vec2(hexRadius * cos(angle), hexRadius * sin(angle));
+        hexVertices.push_back(vertex);
+    }
+
+    // Ray-casting algorithm: Check if a ray from the point intersects with the edges of the hexagon
+    int intersections = 0;
+    for (int i = 0; i < 6; ++i) {
+        glm::vec2 v1 = hexVertices[i];
+        glm::vec2 v2 = hexVertices[(i + 1) % 6];
+        
+        // Check if the point is within the vertical bounds of the edge
+        if ((point.y > std::min(v1.y, v2.y)) && (point.y <= std::max(v1.y, v2.y))) {
+            float xIntersection = (point.y - v1.y) * (v2.x - v1.x) / (v2.y - v1.y) + v1.x;
+            
+            // If the point's x-coordinate is to the left of the edge, count an intersection
+            if (point.x < xIntersection) {
+                intersections++;
+            }
+        }
+    }
+
+    // If the number of intersections is odd, the point is inside the hexagon
+    return intersections % 2 == 1;
+}
+
+    // Example usage
+    void checkPointInsideHex(ChunkComponent& board, const glm::vec2& point) {
+    const float hexWidth = board.hexRadius * 2.0f;
+    const float hexHeight = std::sqrt(3.0f) * board.hexRadius;
+    const float xOffset = hexWidth * 0.75f;
+    const float yOffset = hexHeight;
+
+    for (int row = 0; row < board.rows; ++row) {
+        for (int col = 0; col < board.columns; ++col) {
+            float x = col * xOffset;
+            float y = row * yOffset;
+            if (col % 2 == 1) y += 0.5f * hexHeight;
+
+            glm::vec2 hexCenter(x, y);
+            if (isPointInHexagon(point, hexCenter, board.hexRadius)) {
+                // The point is inside this hexagon, you can return the tile or perform further actions
+                std::cout << "Point is inside tile at (" << row << ", " << col << ")\n";
+            }
+        }
+    }
+}
+
+};

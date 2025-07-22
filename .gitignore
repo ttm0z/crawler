@@ -1,0 +1,9 @@
+# Ignore all .psd files
+*.psd
+
+# Ignore the assets directory
+assets/
+build/
+# Ignore specific files
+secrets.txt
+
