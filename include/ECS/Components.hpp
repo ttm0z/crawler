@@ -301,12 +301,27 @@ struct SpriteComponent {
     glm::vec4 color = glm::vec4(1.0f);
     bool flipX = false;
     bool flipY = false;
+    
+    // Atlas support
+    std::string spriteName = "";     // Name of sprite in atlas (empty for direct texture)
+    std::string atlasName = "";      // Name of atlas containing sprite
+    int renderLayer = 0;             // Rendering layer for depth sorting
+    bool useBatching = true;         // Whether to use batched rendering
 
     SpriteComponent(
         GLuint texture = 0,
         std::shared_ptr<Shader> shaderProgram = nullptr,
         glm::vec4 spriteColor = glm::vec4(1.0f))
         : shader(shaderProgram), textureID(texture), color(spriteColor) {}
+        
+    // Constructor for atlas-based sprites
+    SpriteComponent(
+        const std::string& sprite, 
+        const std::string& atlas,
+        glm::vec4 spriteColor = glm::vec4(1.0f),
+        int layer = 0)
+        : shader(nullptr), textureID(0), color(spriteColor), 
+          spriteName(sprite), atlasName(atlas), renderLayer(layer) {}
 };
 
 struct TileComponent {
